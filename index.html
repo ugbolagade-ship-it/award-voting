@@ -1,40 +1,94 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Award Voting 2026</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-        body {
-            font-family: Arial;
-            margin: 0;
-            background: #f4f4f4;
-            text-align: center;
-        }
+  <title>Award Voting 2026</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-        header {
-            background: black;
-            color: white;
-            padding: 20px;
-        }
+  <style>
+    body {
+      font-family: Arial;
+      margin: 0;
+      background: #f4f4f4;
+    }
 
-        .container {
-            padding: 20px;
-        }
+    header {
+      background: #111;
+      color: white;
+      padding: 20px;
+      text-align: center;
+    }
 
-        .card {
-            background: white;
-            margin: 10px auto;
-            padding: 15px;
-            width: 90%;
-            max-width: 400px;
-            border-radius: 10px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
-        }
+    .container {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 15px;
+      padding: 15px;
+    }
 
-        button {
-            background: green;
-            color: white;
-            padding: 10px;
+    .card {
+      background: white;
+      padding: 15px;
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+      text-align: center;
+    }
+
+    button {
+      background: green;
+      color: white;
+      border: none;
+      padding: 10px;
+      width: 100%;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: darkgreen;
+    }
+  </style>
+</head>
+
+<body>
+
+<header>
+  <h1>🏆 Award Voting 2026</h1>
+  <p>Vote for your favorite nominees</p>
+</header>
+
+<div class="container" id="nomineeList"></div>
+
+<script>
+const nominees = [
+  { name: "John Doe", category: "Best Student Leader" },
+  { name: "Jane Smith", category: "Best Entrepreneur" },
+  { name: "Michael Obi", category: "Most Influential" },
+  { name: "Aisha Bello", category: "Best Speaker" }
+];
+
+// This will scale to 100+ nominees easily
+const container = document.getElementById("nomineeList");
+
+nominees.forEach(n => {
+  const card = document.createElement("div");
+  card.className = "card";
+
+  card.innerHTML = `
+    <h3>${n.name}</h3>
+    <p>${n.category}</p>
+    <button onclick="vote('${n.name}')">Vote</button>
+  `;
+
+  container.appendChild(card);
+});
+
+function vote(name) {
+  alert("Voting system coming soon for: " + name);
+}
+</script>
+
+</body>
+</html>            padding: 10px;
             border: none;
             width: 100%;
             border-radius: 5px;
