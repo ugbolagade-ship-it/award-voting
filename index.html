@@ -1,91 +1,710 @@
-      <!DOCTYPE html>
-<html>
-<head>
-  <title>Award Voting 2026</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+import { useState, useEffect, useCallback, useRef } from "react";
 
-  <style>
-    body {
-      font-family: Arial;
-      margin: 0;
-      background: #f4f4f4;
-    }
+/* ------------------------------------------------------------------ */
+/* Strategy: SMA(20/50) crossover with RSI(14) filter                  */
+/* Same logic as the Python backtester — BUY when fast SMA is above    */
+/* slow SMA and RSI isn't overbought; SELL when fast is below slow and */
+/* RSI isn't oversold; otherwise HOLD.                                  */
+/* ------------------------------------------------------------------ */
 
-    header {
-      background: #111;
-      color: white;
-      padding: 20px;
-      text-align: center;
-    }
-
-    .container {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-      gap: 15px;
-      padding: 15px;
-    }
-
-    .card {
-      background: white;
-      padding: 15px;
-      border-radius: 10px;
-      box-shadow: 0 0 10px rgba(0,0,0,0.1);
-      text-align: center;
-    }
-
-    button {
-      background: green;
-      color: white;
-      border: none;
-      padding: 10px;
-      width: 100%;
-      border-radius: 5px;
-      cursor: pointer;
-    }
-
-    button:hover {
-      background: darkgreen;
-    }
-  </style>
-</head>
-
-<body>
-
-<header>
-  <h1>🏆 Award Voting 2026</h1>
-  <p>Vote for your favorite nominees</p>
-</header>
-
-<div class="container" id="nomineeList"></div>
-
-<script>
-const nominees = [
-  { name: "John Doe", category: "Best Student Leader" },
-  { name: "Jane Smith", category: "Best Entrepreneur" },
-  { name: "Michael Obi", category: "Most Influential" },
-  { name: "Aisha Bello", category: "Best Speaker" }
+const PAIRS = [
+  { symbol: "EUR/USD", label: "EUR / USD" },
+  { symbol: "GBP/USD", label: "GBP / USD" },
+  { symbol: "USD/JPY", label: "USD / JPY" },
+  { symbol: "USD/CHF", label: "USD / CHF" },
+  { symbol: "AUD/USD", label: "AUD / USD" },
+  { symbol: "USD/CAD", label: "USD / CAD" },
 ];
 
-// This will scale to 100+ nominees easily
-const container = document.getElementById("nomineeList");
+const INK = "#1B2A41";
+const PAPER = "#F2ECDD";
+const PAPER_DIM = "#E6DEC9";
+const BRASS = "#B8932F";
+const BUY = "#3F7A4E";
+const SELL = "#A8453A";
+const HOLD = "#8A8378";
 
-nominees.forEach(n => {
-  const card = document.createElement("div");
-  card.className = "card";
-
-  card.innerHTML = `
-    <h3>${n.name}</h3>
-    <p>${n.category}</p>
-    <button onclick="vote('${n.name}')">Vote</button>
-  `;
-
-  container.appendChild(card);
-});
-
-function vote(name) {
-  alert("Voting system coming soon for: " + name);
+function sma(values, window) {
+  const out = new Array(values.length).fill(null);
+  for (let i = window - 1; i < values.length; i++) {
+    let sum = 0;
+    for (let j = i - window + 1; j <= i; j++) sum += values[j];
+    out[i] = sum / window;
+  }
+  return out;
 }
-</script>
 
-</body>
-</html>
+function rsi(values, window = 14) {
+  const out = new Array(values.length).fill(null);
+  let prevAvgG = null;
+  let prevAvgL = null;
+  let gains = 0;
+  let losses = 0;
+  for (let i = 1; i < values.length; i++) {
+    const diff = values[i] - values[i - 1];
+    const gain = diff > 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    if (i <= window) {
+      gains += gain;
+      losses += loss;
+      if (i === window) {
+        prevAvgG = gains / window;
+        prevAvgL = losses / window;
+        out[i] = prevAvgL === 0 ? 100 : 100 - 100 / (1 + prevAvgG / prevAvgL);
+      }
+    } else {
+      prevAvgG = (prevAvgG * (window - 1) + gain) / window;
+      prevAvgL = (prevAvgL * (window - 1) + loss) / window;
+      out[i] = prevAvgL === 0 ? 100 : 100 - 100 / (1 + prevAvgG / prevAvgL);
+    }
+  }
+  return out;
+}
+
+function evaluate(closes) {
+  if (closes.length < 51) return null;
+  const fast = sma(closes, 20);
+  const slow = sma(closes, 50);
+  const r = rsi(closes, 14);
+  const i = closes.length - 1;
+  const f = fast[i];
+  const s = slow[i];
+  const rv = r[i];
+  if (f == null || s == null || rv == null) return null;
+
+  let signal = "HOLD";
+  if (f > s && rv < 70) signal = "BUY";
+  else if (f < s && rv > 30) signal = "SELL";
+
+  return { price: closes[i], fast: f, slow: s, rsi: rv, signal, closes };
+}
+
+/* ------------------------------------------------------------------ */
+/* Demo data — used until an API key is supplied                       */
+/* ------------------------------------------------------------------ */
+
+function demoCloses(symbol) {
+  let seed = 0;
+  for (const c of symbol) seed += c.charCodeAt(0);
+  let x = seed;
+  const rand = () => {
+    x = (x * 9301 + 49297) % 233280;
+    return x / 233280;
+  };
+  const base = { "EUR/USD": 1.085, "GBP/USD": 1.27, "USD/JPY": 157.3, "USD/CHF": 0.895, "AUD/USD": 0.655, "USD/CAD": 1.365 }[symbol] || 1.0;
+  let price = base;
+  const out = [];
+  let drift = 0;
+  for (let i = 0; i < 100; i++) {
+    drift = drift * 0.9 + (rand() - 0.5) * 0.0006;
+    price = price * (1 + drift);
+    out.push(price);
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ */
+/* Data fetching — Twelve Data time_series endpoint                    */
+/* ------------------------------------------------------------------ */
+
+async function fetchCloses(symbol, apiKey) {
+  const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(symbol)}&interval=1h&outputsize=100&apikey=${encodeURIComponent(apiKey)}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (data.status === "error" || data.code) {
+    throw new Error(data.message || "API error");
+  }
+  if (!data.values || !Array.isArray(data.values)) {
+    throw new Error("Unexpected response shape");
+  }
+  return data.values.map((v) => parseFloat(v.close)).reverse();
+}
+
+/* ------------------------------------------------------------------ */
+/* Small components                                                     */
+/* ------------------------------------------------------------------ */
+
+function Sparkline({ values }) {
+  if (!values || values.length < 2) return null;
+  const w = 110;
+  const h = 32;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const pts = values
+    .map((v, i) => {
+      const x = (i / (values.length - 1)) * w;
+      const y = h - ((v - min) / range) * h;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  const last = values[values.length - 1];
+  const rising = last >= values[0];
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} style={{ display: "block" }}>
+      <polyline
+        points={pts}
+        fill="none"
+        stroke={rising ? BUY : SELL}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function SignalFlap({ signal }) {
+  const colors = {
+    BUY: BUY,
+    SELL: SELL,
+    HOLD: HOLD,
+  };
+  const color = colors[signal] || HOLD;
+  return (
+    <div
+      key={signal}
+      className="flap"
+      style={{
+        background: INK,
+        color: PAPER,
+        borderTop: `3px solid ${color}`,
+        fontFamily: "'IBM Plex Mono', monospace",
+        fontWeight: 600,
+        fontSize: "0.85rem",
+        letterSpacing: "0.12em",
+        padding: "0.55rem 0",
+        textAlign: "center",
+        borderRadius: "2px",
+        boxShadow: "0 2px 0 rgba(0,0,0,0.15)",
+      }}
+    >
+      {signal}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Main board                                                            */
+/* ------------------------------------------------------------------ */
+
+export default function SignalBoard() {
+  const [apiKey, setApiKey] = useState("");
+  const [keyInput, setKeyInput] = useState("");
+  const [mode, setMode] = useState("demo"); // "demo" | "live"
+  const [rows, setRows] = useState({});
+  const [lastUpdated, setLastUpdated] = useState(null);
+  const [globalError, setGlobalError] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const intervalRef = useRef(null);
+
+  // Paper-trading state: one simulated position per pair
+  const [positions, setPositions] = useState({});
+  const [lotInputs, setLotInputs] = useState(() => {
+    const init = {};
+    PAIRS.forEach((p) => (init[p.symbol] = "0.10"));
+    return init;
+  });
+
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
+    setGlobalError(null);
+    const next = {};
+    for (const pair of PAIRS) {
+      try {
+        let closes;
+        if (mode === "live" && apiKey) {
+          closes = await fetchCloses(pair.symbol, apiKey);
+        } else {
+          closes = demoCloses(pair.symbol);
+        }
+        const evald = evaluate(closes);
+        next[pair.symbol] = evald
+          ? { ...evald, error: null }
+          : { error: "Not enough data yet" };
+      } catch (e) {
+        next[pair.symbol] = { error: e.message || "Fetch failed" };
+      }
+      // gentle pacing to stay well under free-tier rate limits
+      if (mode === "live") await new Promise((r) => setTimeout(r, 350));
+    }
+    setRows(next);
+    setLastUpdated(new Date());
+    setRefreshing(false);
+  }, [mode, apiKey]);
+
+  useEffect(() => {
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, apiKey]);
+
+  useEffect(() => {
+    if (autoRefresh) {
+      intervalRef.current = setInterval(refresh, 5 * 60 * 1000);
+    } else if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+    }
+    return () => intervalRef.current && clearInterval(intervalRef.current);
+  }, [autoRefresh, refresh]);
+
+  const connectLive = () => {
+    if (!keyInput.trim()) {
+      setGlobalError("Enter an API key first, or stay in demo mode.");
+      return;
+    }
+    setApiKey(keyInput.trim());
+    setMode("live");
+  };
+
+  const decimalsFor = (symbol) => (symbol.includes("JPY") ? 3 : 5);
+  const quoteCcyFor = (symbol) => symbol.split("/")[1];
+
+  const livePnl = (symbol, currentPrice) => {
+    const pos = positions[symbol];
+    if (!pos || !pos.active) return null;
+    const dir = pos.direction === "BUY" ? 1 : -1;
+    return (currentPrice - pos.entryPrice) * dir * pos.units;
+  };
+
+  const toggleTrade = (symbol) => {
+    const row = rows[symbol];
+    if (!row || row.error) return;
+    setPositions((prev) => {
+      const cur = prev[symbol];
+      if (cur && cur.active) {
+        // Stop: close at current price, lock in PnL
+        const dir = cur.direction === "BUY" ? 1 : -1;
+        const closedPnl = (row.price - cur.entryPrice) * dir * cur.units;
+        return {
+          ...prev,
+          [symbol]: { ...cur, active: false, exitPrice: row.price, closedPnl },
+        };
+      }
+      // Start: only open on an actual BUY/SELL signal, not HOLD
+      if (row.signal === "HOLD") return prev;
+      const lots = parseFloat(lotInputs[symbol]) || 0;
+      const units = lots * 100000;
+      return {
+        ...prev,
+        [symbol]: {
+          active: true,
+          direction: row.signal,
+          entryPrice: row.price,
+          units,
+          lots,
+          closedPnl: null,
+          exitPrice: null,
+        },
+      };
+    });
+  };
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        background: PAPER,
+        color: INK,
+        fontFamily: "'IBM Plex Sans', sans-serif",
+      }}
+    >
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+        @keyframes flapIn {
+          0% { transform: rotateX(90deg); opacity: 0; }
+          60% { transform: rotateX(-8deg); opacity: 1; }
+          100% { transform: rotateX(0deg); opacity: 1; }
+        }
+        .flap {
+          animation: flapIn 0.45s ease-out;
+          transform-origin: top center;
+        }
+        .board-row {
+          border-bottom: 1px solid ${PAPER_DIM};
+        }
+        .board-row:last-child {
+          border-bottom: none;
+        }
+        @media (max-width: 640px) {
+          .board-grid {
+            grid-template-columns: 1fr !important;
+            gap: 0.5rem !important;
+          }
+          .board-row {
+            border-bottom: 2px solid ${PAPER_DIM};
+            padding-bottom: 1rem !important;
+            margin-bottom: 0.75rem;
+          }
+        }
+      `}</style>
+
+      {/* Header */}
+      <header
+        style={{
+          borderBottom: `3px double ${INK}`,
+          padding: "1.75rem 1.5rem 1.25rem",
+        }}
+      >
+        <div style={{ maxWidth: "880px", margin: "0 auto" }}>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: "0.5rem" }}>
+            <h1
+              style={{
+                fontFamily: "'Fraunces', serif",
+                fontWeight: 700,
+                fontSize: "2rem",
+                letterSpacing: "0.02em",
+                margin: 0,
+              }}
+            >
+              Signal Board
+            </h1>
+            <span
+              style={{
+                fontFamily: "'IBM Plex Mono', monospace",
+                fontSize: "0.75rem",
+                letterSpacing: "0.15em",
+                textTransform: "uppercase",
+                color: BRASS,
+                border: `1px solid ${BRASS}`,
+                padding: "0.2rem 0.5rem",
+                borderRadius: "2px",
+              }}
+            >
+              {mode === "live" ? "Live · Twelve Data" : "Demo Feed"}
+            </span>
+          </div>
+          <p style={{ marginTop: "0.4rem", color: "#5C5444", fontSize: "0.95rem" }}>
+            SMA(20/50) crossover, RSI(14) filter — hourly bars, six majors.
+          </p>
+        </div>
+      </header>
+
+      {/* Connection bar */}
+      <div style={{ maxWidth: "880px", margin: "0 auto", padding: "1rem 1.5rem 0" }}>
+        {mode === "demo" && (
+          <div
+            style={{
+              display: "flex",
+              gap: "0.6rem",
+              flexWrap: "wrap",
+              alignItems: "center",
+              background: PAPER_DIM,
+              border: `1px solid ${BRASS}`,
+              borderRadius: "3px",
+              padding: "0.75rem 1rem",
+              fontSize: "0.9rem",
+            }}
+          >
+            <span style={{ fontWeight: 500 }}>
+              Showing simulated prices. Paste a free{" "}
+              <a
+                href="https://twelvedata.com/pricing"
+                target="_blank"
+                rel="noreferrer"
+                style={{ color: INK, textDecoration: "underline" }}
+              >
+                Twelve Data
+              </a>{" "}
+              API key for live rates:
+            </span>
+            <input
+              type="text"
+              value={keyInput}
+              onChange={(e) => setKeyInput(e.target.value)}
+              placeholder="API key"
+              style={{
+                fontFamily: "'IBM Plex Mono', monospace",
+                fontSize: "0.85rem",
+                padding: "0.4rem 0.6rem",
+                border: `1px solid ${INK}`,
+                borderRadius: "2px",
+                background: PAPER,
+                color: INK,
+                minWidth: "180px",
+                flex: "1 1 180px",
+              }}
+            />
+            <button
+              onClick={connectLive}
+              style={{
+                fontFamily: "'IBM Plex Mono', monospace",
+                fontSize: "0.8rem",
+                letterSpacing: "0.08em",
+                textTransform: "uppercase",
+                background: INK,
+                color: PAPER,
+                border: "none",
+                borderRadius: "2px",
+                padding: "0.45rem 0.9rem",
+                cursor: "pointer",
+              }}
+            >
+              Connect
+            </button>
+          </div>
+        )}
+
+        {mode === "live" && (
+          <div
+            style={{
+              display: "flex",
+              gap: "0.75rem",
+              flexWrap: "wrap",
+              alignItems: "center",
+              fontSize: "0.85rem",
+              color: "#5C5444",
+            }}
+          >
+            <span>
+              Connected with key ending{" "}
+              <span style={{ fontFamily: "'IBM Plex Mono', monospace" }}>
+                ···{apiKey.slice(-4)}
+              </span>
+            </span>
+            <button
+              onClick={() => {
+                setMode("demo");
+                setApiKey("");
+              }}
+              style={{
+                fontFamily: "'IBM Plex Mono', monospace",
+                fontSize: "0.75rem",
+                background: "transparent",
+                border: `1px solid ${INK}`,
+                borderRadius: "2px",
+                padding: "0.25rem 0.6rem",
+                cursor: "pointer",
+                color: INK,
+              }}
+            >
+              Disconnect
+            </button>
+            <label style={{ display: "flex", alignItems: "center", gap: "0.35rem", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={autoRefresh}
+                onChange={(e) => setAutoRefresh(e.target.checked)}
+              />
+              Auto-refresh every 5 min
+            </label>
+          </div>
+        )}
+
+        {globalError && (
+          <p style={{ color: SELL, fontSize: "0.85rem", marginTop: "0.5rem" }}>{globalError}</p>
+        )}
+      </div>
+
+      {/* Board */}
+      <main style={{ maxWidth: "880px", margin: "0 auto", padding: "1.25rem 1.5rem 2rem" }}>
+        <div
+          className="board-grid"
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1.4fr 1fr 1.2fr 0.9fr 0.9fr",
+            gap: "0.5rem 1rem",
+            alignItems: "center",
+            fontFamily: "'IBM Plex Mono', monospace",
+            fontSize: "0.7rem",
+            letterSpacing: "0.12em",
+            textTransform: "uppercase",
+            color: "#8A8378",
+            padding: "0 0 0.6rem",
+            borderBottom: `1px solid ${PAPER_DIM}`,
+          }}
+        >
+          <span>Pair</span>
+          <span>Last</span>
+          <span>30-bar trend</span>
+          <span>RSI(14)</span>
+          <span style={{ textAlign: "center" }}>Signal</span>
+        </div>
+
+        {PAIRS.map((pair) => {
+          const row = rows[pair.symbol];
+          return (
+            <div
+              key={pair.symbol}
+              className="board-grid board-row"
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1.4fr 1fr 1.2fr 0.9fr 0.9fr",
+                gap: "0.5rem 1rem",
+                alignItems: "center",
+                padding: "0.85rem 0",
+              }}
+            >
+              <div>
+                <div style={{ fontFamily: "'Fraunces', serif", fontWeight: 600, fontSize: "1.1rem" }}>
+                  {pair.label}
+                </div>
+              </div>
+
+              {!row ? (
+                <div style={{ gridColumn: "2 / -1", color: "#8A8378", fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.85rem" }}>
+                  loading…
+                </div>
+              ) : row.error ? (
+                <div style={{ gridColumn: "2 / -1", color: SELL, fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.8rem" }}>
+                  {row.error}
+                </div>
+              ) : (
+                <>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "1rem", fontWeight: 500 }}>
+                    {row.price.toFixed(decimalsFor(pair.symbol))}
+                  </div>
+                  <Sparkline values={row.closes.slice(-30)} />
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.95rem" }}>
+                    {row.rsi.toFixed(1)}
+                  </div>
+                  <SignalFlap signal={row.signal} />
+
+                  <div
+                    style={{
+                      gridColumn: "1 / -1",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "0.75rem",
+                      flexWrap: "wrap",
+                      marginTop: "0.6rem",
+                      fontSize: "0.8rem",
+                      fontFamily: "'IBM Plex Mono', monospace",
+                    }}
+                  >
+                    <label style={{ display: "flex", alignItems: "center", gap: "0.35rem" }}>
+                      lot size
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={lotInputs[pair.symbol]}
+                        disabled={positions[pair.symbol]?.active}
+                        onChange={(e) =>
+                          setLotInputs((prev) => ({ ...prev, [pair.symbol]: e.target.value }))
+                        }
+                        style={{
+                          width: "70px",
+                          fontFamily: "'IBM Plex Mono', monospace",
+                          fontSize: "0.8rem",
+                          padding: "0.25rem 0.4rem",
+                          border: `1px solid ${INK}`,
+                          borderRadius: "2px",
+                          background: PAPER,
+                          color: INK,
+                        }}
+                      />
+                    </label>
+
+                    {positions[pair.symbol]?.active ? (
+                      <>
+                        <span>
+                          entry {positions[pair.symbol].entryPrice.toFixed(decimalsFor(pair.symbol))}
+                        </span>
+                        {(() => {
+                          const pnl = livePnl(pair.symbol, row.price);
+                          return (
+                            <span style={{ color: pnl >= 0 ? BUY : SELL, fontWeight: 600 }}>
+                              pnl {pnl >= 0 ? "+" : ""}
+                              {pnl.toFixed(2)} {quoteCcyFor(pair.symbol)}
+                            </span>
+                          );
+                        })()}
+                        <button
+                          onClick={() => toggleTrade(pair.symbol)}
+                          style={{
+                            fontSize: "0.75rem",
+                            letterSpacing: "0.08em",
+                            textTransform: "uppercase",
+                            background: SELL,
+                            color: PAPER,
+                            border: "none",
+                            borderRadius: "2px",
+                            padding: "0.3rem 0.7rem",
+                            cursor: "pointer",
+                          }}
+                        >
+                          Stop
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => toggleTrade(pair.symbol)}
+                          disabled={row.signal === "HOLD"}
+                          title={row.signal === "HOLD" ? "No active BUY/SELL signal" : `Open simulated ${row.signal}`}
+                          style={{
+                            fontSize: "0.75rem",
+                            letterSpacing: "0.08em",
+                            textTransform: "uppercase",
+                            background: row.signal === "HOLD" ? PAPER_DIM : INK,
+                            color: row.signal === "HOLD" ? "#8A8378" : PAPER,
+                            border: "none",
+                            borderRadius: "2px",
+                            padding: "0.3rem 0.7rem",
+                            cursor: row.signal === "HOLD" ? "default" : "pointer",
+                          }}
+                        >
+                          Trade this signal
+                        </button>
+                        {positions[pair.symbol]?.closedPnl != null && (
+                          <span
+                            style={{
+                              color: positions[pair.symbol].closedPnl >= 0 ? BUY : SELL,
+                            }}
+                          >
+                            last close {positions[pair.symbol].closedPnl >= 0 ? "+" : ""}
+                            {positions[pair.symbol].closedPnl.toFixed(2)} {quoteCcyFor(pair.symbol)}
+                          </span>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        })}
+
+        <div style={{ marginTop: "1.25rem", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.5rem" }}>
+          <button
+            onClick={refresh}
+            disabled={refreshing}
+            style={{
+              fontFamily: "'IBM Plex Mono', monospace",
+              fontSize: "0.8rem",
+              letterSpacing: "0.08em",
+              textTransform: "uppercase",
+              background: refreshing ? PAPER_DIM : INK,
+              color: refreshing ? "#8A8378" : PAPER,
+              border: "none",
+              borderRadius: "2px",
+              padding: "0.5rem 1.1rem",
+              cursor: refreshing ? "default" : "pointer",
+            }}
+          >
+            {refreshing ? "Refreshing…" : "Refresh now"}
+          </button>
+          {lastUpdated && (
+            <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.75rem", color: "#8A8378" }}>
+              updated {lastUpdated.toLocaleTimeString()}
+            </span>
+          )}
+        </div>
+      </main>
+
+      {/* Footer */}
+      <footer style={{ borderTop: `1px solid ${PAPER_DIM}`, padding: "1rem 1.5rem 2rem" }}>
+        <p style={{ maxWidth: "880px", margin: "0 auto", fontSize: "0.78rem", color: "#8A8378", lineHeight: 1.5 }}>
+          These signals reflect a simple SMA crossover with an RSI filter and are not financial advice.
+          "Trade this signal" opens a <strong>simulated</strong> position at the current price using
+          the lot size you set (1.00 lot = 100,000 units) — no real orders are placed and no broker is
+          connected. PnL is shown in the pair's quote currency and ignores spread, swap, and conversion
+          to your account currency. Use it to see how the strategy's calls would have played out, not
+          as a substitute for testing with a real broker.
+        </p>
+      </footer>
+    </div>
+  );
+}
