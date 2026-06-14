@@ -24,12 +24,15 @@ const { useState, useEffect, useCallback, useRef } = React;
 /* ------------------------------------------------------------------ */
 
 const PAIRS = [
-  { symbol: "EUR/USD", label: "EUR / USD" },
-  { symbol: "GBP/USD", label: "GBP / USD" },
-  { symbol: "USD/JPY", label: "USD / JPY" },
-  { symbol: "USD/CHF", label: "USD / CHF" },
-  { symbol: "AUD/USD", label: "AUD / USD" },
-  { symbol: "USD/CAD", label: "USD / CAD" },
+  { symbol: "EUR/USD", label: "EUR / USD", contractSize: 100000, decimals: 5 },
+  { symbol: "GBP/USD", label: "GBP / USD", contractSize: 100000, decimals: 5 },
+  { symbol: "USD/JPY", label: "USD / JPY", contractSize: 100000, decimals: 3 },
+  { symbol: "USD/CHF", label: "USD / CHF", contractSize: 100000, decimals: 5 },
+  { symbol: "AUD/USD", label: "AUD / USD", contractSize: 100000, decimals: 5 },
+  { symbol: "USD/CAD", label: "USD / CAD", contractSize: 100000, decimals: 5 },
+  { symbol: "XAU/USD", label: "XAU / USD", contractSize: 100, decimals: 2 },
+  { symbol: "BTC/USD", label: "BTC / USD", contractSize: 1, decimals: 2 },
+  { symbol: "NDX", label: "NASDAQ 100", contractSize: 1, decimals: 2 },
 ];
 
 const INK = "#1B2A41";
@@ -39,6 +42,29 @@ const BRASS = "#B8932F";
 const BUY = "#3F7A4E";
 const SELL = "#A8453A";
 const HOLD = "#8A8378";
+
+/* ------------------------------------------------------------------ */
+/* Persistence — keeps connection state and open positions across      */
+/* page refreshes, stored only in this browser.                        */
+/* ------------------------------------------------------------------ */
+
+const storage = {
+  get(key, fallback) {
+    try {
+      const v = localStorage.getItem(key);
+      return v !== null ? JSON.parse(v) : fallback;
+    } catch {
+      return fallback;
+    }
+  },
+  set(key, value) {
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      // storage unavailable (e.g. some embedded preview contexts) — ignore
+    }
+  },
+};
 
 function sma(values, window) {
   const out = new Array(values.length).fill(null);
@@ -107,7 +133,17 @@ function demoCloses(symbol) {
     x = (x * 9301 + 49297) % 233280;
     return x / 233280;
   };
-  const base = { "EUR/USD": 1.085, "GBP/USD": 1.27, "USD/JPY": 157.3, "USD/CHF": 0.895, "AUD/USD": 0.655, "USD/CAD": 1.365 }[symbol] || 1.0;
+  const base = {
+    "EUR/USD": 1.085,
+    "GBP/USD": 1.27,
+    "USD/JPY": 157.3,
+    "USD/CHF": 0.895,
+    "AUD/USD": 0.655,
+    "USD/CAD": 1.365,
+    "XAU/USD": 2380,
+    "BTC/USD": 67500,
+    "NDX": 19200,
+  }[symbol] || 1.0;
   let price = base;
   const out = [];
   let drift = 0;
@@ -205,23 +241,32 @@ function SignalFlap({ signal }) {
 /* ------------------------------------------------------------------ */
 
 function SignalBoard() {
-  const [apiKey, setApiKey] = useState("");
+  const [apiKey, setApiKey] = useState(() => storage.get("signalboard_apiKey", ""));
   const [keyInput, setKeyInput] = useState("");
-  const [mode, setMode] = useState("demo"); // "demo" | "live"
+  const [mode, setMode] = useState(() => storage.get("signalboard_mode", "demo")); // "demo" | "live"
   const [rows, setRows] = useState({});
   const [lastUpdated, setLastUpdated] = useState(null);
   const [globalError, setGlobalError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(() => storage.get("signalboard_autoRefresh", false));
   const intervalRef = useRef(null);
 
   // Paper-trading state: one simulated position per pair
-  const [positions, setPositions] = useState({});
+  const [positions, setPositions] = useState(() => storage.get("signalboard_positions", {}));
   const [lotInputs, setLotInputs] = useState(() => {
+    const saved = storage.get("signalboard_lotInputs", null);
+    if (saved) return saved;
     const init = {};
     PAIRS.forEach((p) => (init[p.symbol] = "0.10"));
     return init;
   });
+
+  // Persist connection + trading state across page refreshes
+  useEffect(() => storage.set("signalboard_apiKey", apiKey), [apiKey]);
+  useEffect(() => storage.set("signalboard_mode", mode), [mode]);
+  useEffect(() => storage.set("signalboard_autoRefresh", autoRefresh), [autoRefresh]);
+  useEffect(() => storage.set("signalboard_positions", positions), [positions]);
+  useEffect(() => storage.set("signalboard_lotInputs", lotInputs), [lotInputs]);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -273,8 +318,9 @@ function SignalBoard() {
     setMode("live");
   };
 
-  const decimalsFor = (symbol) => (symbol.includes("JPY") ? 3 : 5);
-  const quoteCcyFor = (symbol) => symbol.split("/")[1];
+  const decimalsFor = (symbol) => PAIRS.find((p) => p.symbol === symbol)?.decimals ?? 5;
+  const quoteCcyFor = (symbol) => (symbol.includes("/") ? symbol.split("/")[1] : "USD");
+  const contractSizeFor = (symbol) => PAIRS.find((p) => p.symbol === symbol)?.contractSize ?? 100000;
 
   const livePnl = (symbol, currentPrice) => {
     const pos = positions[symbol];
@@ -300,7 +346,7 @@ function SignalBoard() {
       // Start: only open on an actual BUY/SELL signal, not HOLD
       if (row.signal === "HOLD") return prev;
       const lots = parseFloat(lotInputs[symbol]) || 0;
-      const units = lots * 100000;
+      const units = lots * contractSizeFor(symbol);
       return {
         ...prev,
         [symbol]: {
@@ -392,7 +438,7 @@ function SignalBoard() {
             </span>
           </div>
           <p style={{ marginTop: "0.4rem", color: "#5C5444", fontSize: "0.95rem" }}>
-            SMA(20/50) crossover, RSI(14) filter — hourly bars, six majors.
+            SMA(20/50) crossover, RSI(14) filter — hourly bars, FX majors, gold, BTC/USD &amp; Nasdaq 100.
           </p>
         </div>
       </header>
@@ -497,6 +543,9 @@ function SignalBoard() {
             >
               Disconnect
             </button>
+            <span style={{ fontSize: "0.75rem", color: "#8A8378" }}>
+              (remembered on this device)
+            </span>
             <label style={{ display: "flex", alignItems: "center", gap: "0.35rem", cursor: "pointer" }}>
               <input
                 type="checkbox"
@@ -505,6 +554,10 @@ function SignalBoard() {
               />
               Auto-refresh every 5 min
             </label>
+            <span style={{ fontSize: "0.75rem", color: "#8A8378" }}>
+              Note: Twelve Data's free plan allows 8 requests/min — refreshing all {PAIRS.length} instruments
+              at once may briefly hit that limit, showing "API error" on the last row or two until the next try.
+            </span>
           </div>
         )}
 
@@ -612,6 +665,9 @@ function SignalBoard() {
                         }}
                       />
                     </label>
+                    <span style={{ color: "#8A8378", fontSize: "0.72rem" }}>
+                      (1.00 lot = {pair.contractSize.toLocaleString()} {pair.symbol === "NDX" ? "× index" : pair.symbol.split("/")[0]})
+                    </span>
 
                     {positions[pair.symbol]?.active ? (
                       <>
@@ -715,10 +771,13 @@ function SignalBoard() {
         <p style={{ maxWidth: "880px", margin: "0 auto", fontSize: "0.78rem", color: "#8A8378", lineHeight: 1.5 }}>
           These signals reflect a simple SMA crossover with an RSI filter and are not financial advice.
           "Trade this signal" opens a <strong>simulated</strong> position at the current price using
-          the lot size you set (1.00 lot = 100,000 units) — no real orders are placed and no broker is
-          connected. PnL is shown in the pair's quote currency and ignores spread, swap, and conversion
-          to your account currency. Use it to see how the strategy's calls would have played out, not
-          as a substitute for testing with a real broker.
+          the lot size you set — no real orders are placed and no broker is connected. Contract size per
+          lot is shown next to each lot input and follows common CFD conventions (100,000 base-currency
+          units for FX, 100 oz for gold, 1 BTC for crypto, 1 × index points for Nasdaq 100); your actual
+          broker's contract sizes may differ. PnL is shown in the instrument's quote currency and ignores
+          spread, swap, and conversion to your account currency. Note that gold and index data on Twelve
+          Data's free tier may require a paid plan. Use this to see how the strategy's calls would have
+          played out, not as a substitute for testing with a real broker.
         </p>
       </footer>
     </div>
