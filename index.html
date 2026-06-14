@@ -268,11 +268,28 @@ function SignalBoard() {
   useEffect(() => storage.set("signalboard_positions", positions), [positions]);
   useEffect(() => storage.set("signalboard_lotInputs", lotInputs), [lotInputs]);
 
+  const [refreshNote, setRefreshNote] = useState(null);
+
   const refresh = useCallback(async () => {
     setRefreshing(true);
     setGlobalError(null);
-    const next = {};
-    for (const pair of PAIRS) {
+    setRefreshNote(null);
+    const FREE_TIER_CREDITS_PER_MIN = 8;
+    let creditsUsedThisWindow = 0;
+
+    for (let i = 0; i < PAIRS.length; i++) {
+      const pair = PAIRS[i];
+
+      if (mode === "live" && creditsUsedThisWindow >= FREE_TIER_CREDITS_PER_MIN) {
+        // Stay under Twelve Data's free-tier limit: wait for the credit
+        // window to reset before making the next request.
+        setRefreshNote(
+          `Pausing ~60s for the next API credit window (${i}/${PAIRS.length} done)…`
+        );
+        await new Promise((r) => setTimeout(r, 61000));
+        creditsUsedThisWindow = 0;
+      }
+
       try {
         let closes;
         if (mode === "live" && apiKey) {
@@ -281,16 +298,21 @@ function SignalBoard() {
           closes = demoCloses(pair.symbol);
         }
         const evald = evaluate(closes);
-        next[pair.symbol] = evald
-          ? { ...evald, error: null }
-          : { error: "Not enough data yet" };
+        setRows((prev) => ({
+          ...prev,
+          [pair.symbol]: evald ? { ...evald, error: null } : { error: "Not enough data yet" },
+        }));
       } catch (e) {
-        next[pair.symbol] = { error: e.message || "Fetch failed" };
+        setRows((prev) => ({ ...prev, [pair.symbol]: { error: e.message || "Fetch failed" } }));
       }
-      // gentle pacing to stay well under free-tier rate limits
-      if (mode === "live") await new Promise((r) => setTimeout(r, 350));
+
+      if (mode === "live") {
+        creditsUsedThisWindow += 1;
+        // gentle pacing between individual requests
+        await new Promise((r) => setTimeout(r, 350));
+      }
     }
-    setRows(next);
+    setRefreshNote(null);
     setLastUpdated(new Date());
     setRefreshing(false);
   }, [mode, apiKey]);
@@ -555,8 +577,8 @@ function SignalBoard() {
               Auto-refresh every 5 min
             </label>
             <span style={{ fontSize: "0.75rem", color: "#8A8378" }}>
-              Note: Twelve Data's free plan allows 8 requests/min — refreshing all {PAIRS.length} instruments
-              at once may briefly hit that limit, showing "API error" on the last row or two until the next try.
+              With {PAIRS.length} instruments and Twelve Data's free 8 credits/min, a full refresh
+              pauses briefly partway through — this is normal.
             </span>
           </div>
         )}
@@ -764,6 +786,11 @@ function SignalBoard() {
             </span>
           )}
         </div>
+        {refreshNote && (
+          <p style={{ marginTop: "0.5rem", fontSize: "0.78rem", color: BRASS, fontFamily: "'IBM Plex Mono', monospace" }}>
+            {refreshNote}
+          </p>
+        )}
       </main>
 
       {/* Footer */}
